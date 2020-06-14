@@ -1,11 +1,10 @@
 ﻿using System;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Windows.Forms;
 using Newtonsoft.Json;
-using static Il2CppDumper.DefineConstants;
+#if NETFRAMEWORK
+using System.Windows.Forms;
+#endif
 
 namespace Il2CppDumper
 {
@@ -16,11 +15,9 @@ namespace Il2CppDumper
         [STAThread]
         static void Main(string[] args)
         {
-            config = JsonConvert.DeserializeObject<Config>(File.ReadAllText(Application.StartupPath + Path.DirectorySeparatorChar + @"config.json"));
+            config = JsonConvert.DeserializeObject<Config>(File.ReadAllText(AppDomain.CurrentDomain.BaseDirectory + @"config.json"));
             byte[] il2cppBytes = null;
             byte[] metadataBytes = null;
-            string stringVersion = null;
-            int mode = 0;
 
             if (args.Length == 1)
             {
@@ -30,18 +27,10 @@ namespace Il2CppDumper
                     return;
                 }
             }
-            if (args.Length > 4)
+            if (args.Length > 2)
             {
                 ShowHelp();
                 return;
-            }
-            if (args.Length > 3)
-            {
-                mode = int.Parse(args[3]);
-            }
-            if (args.Length > 2)
-            {
-                stringVersion = args[2];
             }
             if (args.Length > 1)
             {
@@ -58,6 +47,7 @@ namespace Il2CppDumper
                     metadataBytes = file2;
                 }
             }
+#if NETFRAMEWORK
             if (il2cppBytes == null)
             {
                 var ofd = new OpenFileDialog();
@@ -80,9 +70,15 @@ namespace Il2CppDumper
                     return;
                 }
             }
+#endif
+            if (il2cppBytes == null)
+            {
+                ShowHelp();
+                return;
+            }
             try
             {
-                if (Init(il2cppBytes, metadataBytes, stringVersion, mode, out var metadata, out var il2Cpp))
+                if (Init(il2cppBytes, metadataBytes, out var metadata, out var il2Cpp))
                 {
                     Dump(metadata, il2Cpp);
                 }
@@ -91,82 +87,55 @@ namespace Il2CppDumper
             {
                 Console.WriteLine(e);
             }
-            Console.WriteLine("Press any key to exit...");
-            Console.ReadKey(true);
+            if (config.RequireAnyKey)
+            {
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadKey(true);
+            }
         }
 
         static void ShowHelp()
         {
-            Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata> [unityVersion] [mode]");
-            Application.ExitThread();
+            Console.WriteLine($"usage: {AppDomain.CurrentDomain.FriendlyName} <executable-file> <global-metadata>");
         }
 
-        private static bool Init(byte[] il2cppBytes, byte[] metadataBytes, string stringVersion, int mode, out Metadata metadata, out Il2Cpp il2Cpp)
+        private static bool Init(byte[] il2cppBytes, byte[] metadataBytes, out Metadata metadata, out Il2Cpp il2Cpp)
         {
             var sanity = BitConverter.ToUInt32(metadataBytes, 0);
             if (sanity != 0xFAB11BAF)
             {
-                throw new Exception("ERROR: Metadata file supplied is not valid metadata file.");
-            }
-            float fixedMetadataVersion;
-            var metadataVersion = BitConverter.ToInt32(metadataBytes, 4);
-            if (metadataVersion == 24)
-            {
-                if (stringVersion == null)
-                {
-                    Console.WriteLine("Input Unity version: ");
-                    stringVersion = Console.ReadLine();
-                }
-                try
-                {
-                    var versionSplit = Array.ConvertAll(Regex.Replace(stringVersion, @"\D", ".").Split(new[] { "." }, StringSplitOptions.RemoveEmptyEntries), int.Parse);
-                    var unityVersion = new Version(versionSplit[0], versionSplit[1]);
-                    if (unityVersion >= Unity20191)
-                    {
-                        fixedMetadataVersion = 24.2f;
-                    }
-                    else if (unityVersion >= Unity20183)
-                    {
-                        fixedMetadataVersion = 24.1f;
-                    }
-                    else
-                    {
-                        fixedMetadataVersion = metadataVersion;
-                    }
-                }
-                catch
-                {
-                    throw new Exception("You must enter the correct Unity version number");
-                }
-            }
-            else
-            {
-                fixedMetadataVersion = metadataVersion;
+                throw new InvalidDataException("ERROR: Metadata file supplied is not valid metadata file.");
             }
             Console.WriteLine("Initializing metadata...");
-            metadata = new Metadata(new MemoryStream(metadataBytes), fixedMetadataVersion);
-            //判断il2cpp的magic
+            metadata = new Metadata(new MemoryStream(metadataBytes));
+            Console.WriteLine($"Metadata Version: {metadata.Version}");
+
+            Console.WriteLine("Initializing il2cpp file...");
             var il2cppMagic = BitConverter.ToUInt32(il2cppBytes, 0);
-            var isElf = false;
-            var isPE = false;
-            var is64bit = false;
-            var isNSO = false;
+            var il2CppMemory = new MemoryStream(il2cppBytes);
             switch (il2cppMagic)
             {
                 default:
-                    throw new Exception("ERROR: il2cpp file not supported.");
+                    throw new NotSupportedException("ERROR: il2cpp file not supported.");
+                case 0x6D736100:
+                    var web = new WebAssembly(il2CppMemory);
+                    il2Cpp = web.CreateMemory();
+                    break;
                 case 0x304F534E:
-                    isNSO = true;
-                    is64bit = true;
+                    var nso = new NSO(il2CppMemory);
+                    il2Cpp = nso.UnCompress();
                     break;
                 case 0x905A4D: //PE
-                    isPE = true;
+                    il2Cpp = new PE(il2CppMemory);
                     break;
                 case 0x464c457f: //ELF
-                    isElf = true;
                     if (il2cppBytes[4] == 2) //ELF64
                     {
-                        is64bit = true;
+                        il2Cpp = new Elf64(il2CppMemory);
+                    }
+                    else
+                    {
+                        il2Cpp = new Elf(il2CppMemory);
                     }
                     break;
                 case 0xCAFEBABE: //FAT Mach-O
@@ -183,82 +152,50 @@ namespace Il2CppDumper
                     var index = int.Parse(key.KeyChar.ToString()) - 1;
                     var magic = machofat.fats[index % 2].magic;
                     il2cppBytes = machofat.GetMacho(index % 2);
+                    il2CppMemory = new MemoryStream(il2cppBytes);
                     if (magic == 0xFEEDFACF)
                         goto case 0xFEEDFACF;
                     else
                         goto case 0xFEEDFACE;
                 case 0xFEEDFACF: // 64bit Mach-O
-                    is64bit = true;
+                    il2Cpp = new Macho64(il2CppMemory);
                     break;
                 case 0xFEEDFACE: // 32bit Mach-O
+                    il2Cpp = new Macho(il2CppMemory);
                     break;
             }
+            var version = config.ForceIl2CppVersion ? config.ForceVersion : metadata.Version;
+            il2Cpp.SetProperties(version, metadata.maxMetadataUsages);
+            Console.WriteLine($"Il2Cpp Version: {il2Cpp.Version}");
 
-            var version = config.ForceIl2CppVersion ? config.ForceVersion : metadata.version;
-            Console.WriteLine("Initializing il2cpp file...");
-            if (isNSO)
-            {
-                var nso = new NSO(new MemoryStream(il2cppBytes), version, metadata.maxMetadataUsages);
-                il2Cpp = nso.UnCompress();
-            }
-            else if (isPE)
-            {
-                il2Cpp = new PE(new MemoryStream(il2cppBytes), version, metadata.maxMetadataUsages);
-            }
-            else if (isElf)
-            {
-                if (is64bit)
-                    il2Cpp = new Elf64(new MemoryStream(il2cppBytes), version, metadata.maxMetadataUsages);
-                else
-                    il2Cpp = new Elf(new MemoryStream(il2cppBytes), version, metadata.maxMetadataUsages);
-            }
-            else if (is64bit)
-                il2Cpp = new Macho64(new MemoryStream(il2cppBytes), version, metadata.maxMetadataUsages);
-            else
-                il2Cpp = new Macho(new MemoryStream(il2cppBytes), version, metadata.maxMetadataUsages);
-
-            if (mode == 0)
-            {
-                Console.WriteLine("Select Mode: 1.Manual 2.Auto 3.Auto(Plus) 4.Auto(Symbol)");
-                var modeKey = Console.ReadKey(true);
-                mode = int.Parse(modeKey.KeyChar.ToString());
-            }
-            if (mode != 1)
-            {
-                Console.WriteLine("Searching...");
-            }
+            Console.WriteLine("Searching...");
             try
             {
-                bool flag;
-                switch (mode)
+                var flag = il2Cpp.PlusSearch(metadata.methodDefs.Count(x => x.methodIndex >= 0), metadata.typeDefs.Length);
+                if (!flag)
                 {
-                    case 1: //Manual
-                        Console.Write("Input CodeRegistration: ");
-                        var codeRegistration = Convert.ToUInt64(Console.ReadLine(), 16);
-                        Console.Write("Input MetadataRegistration: ");
-                        var metadataRegistration = Convert.ToUInt64(Console.ReadLine(), 16);
-                        il2Cpp.Init(codeRegistration, metadataRegistration);
-                        flag = true;
-                        break;
-                    case 2: //Auto
-                        flag = il2Cpp.Search();
-                        break;
-                    case 3: //Auto(Plus)
-                        flag = il2Cpp.PlusSearch(metadata.methodDefs.Count(x => x.methodIndex >= 0), metadata.typeDefs.Length);
-                        break;
-                    case 4: //Auto(Symbol)
-                        flag = il2Cpp.SymbolSearch();
-                        break;
-                    default:
-                        Console.WriteLine("ERROR: You have to choose a mode.");
-                        return false;
+                    flag = il2Cpp.Search();
                 }
                 if (!flag)
-                    throw new Exception();
+                {
+                    flag = il2Cpp.SymbolSearch();
+                }
+                if (!flag)
+                {
+                    Console.WriteLine("ERROR: Can't use auto mode to process file, try manual mode.");
+                    Console.Write("Input CodeRegistration: ");
+                    var codeRegistration = Convert.ToUInt64(Console.ReadLine(), 16);
+                    Console.Write("Input MetadataRegistration: ");
+                    var metadataRegistration = Convert.ToUInt64(Console.ReadLine(), 16);
+                    il2Cpp.Init(codeRegistration, metadataRegistration);
+                    return true;
+                }
             }
-            catch
+            catch (Exception e)
             {
-                throw new Exception("ERROR: Can't use this mode to process file, try another mode.");
+                Console.WriteLine(e);
+                Console.WriteLine("ERROR: An error occurred while processing.");
+                return false;
             }
             return true;
         }
@@ -266,31 +203,18 @@ namespace Il2CppDumper
         private static void Dump(Metadata metadata, Il2Cpp il2Cpp)
         {
             Console.WriteLine("Dumping...");
-            var writer = new StreamWriter(new FileStream("dump.cs", FileMode.Create), new UTF8Encoding(false));
-            var decompiler = new Il2CppDecompiler(metadata, il2Cpp);
-            decompiler.Decompile(writer, config);
+            var executor = new Il2CppExecutor(metadata, il2Cpp);
+            var decompiler = new Il2CppDecompiler(executor);
+            decompiler.Decompile(config);
             Console.WriteLine("Done!");
             Console.WriteLine("Generate script...");
-            var scriptwriter = new StreamWriter(new FileStream("script.py", FileMode.Create), new UTF8Encoding(false));
-            var scriptGenerator = new ScriptGenerator(metadata, il2Cpp);
-            scriptGenerator.WriteScript(scriptwriter, config);
+            var scriptGenerator = new ScriptGenerator(executor);
+            scriptGenerator.WriteScript(config);
             Console.WriteLine("Done!");
             if (config.DummyDll)
             {
                 Console.WriteLine("Generate dummy dll...");
-                if (Directory.Exists("DummyDll"))
-                    Directory.Delete("DummyDll", true);
-                Directory.CreateDirectory("DummyDll");
-                Directory.SetCurrentDirectory("DummyDll");
-                var dummy = new DummyAssemblyGenerator(metadata, il2Cpp);
-                foreach (var assembly in dummy.Assemblies)
-                {
-                    using (var stream = new MemoryStream())
-                    {
-                        assembly.Write(stream);
-                        File.WriteAllBytes(assembly.MainModule.Name, stream.ToArray());
-                    }
-                }
+                DummyAssemblyExporter.Export(metadata, il2Cpp);
                 Console.WriteLine("Done!");
             }
         }

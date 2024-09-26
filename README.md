@@ -4,70 +4,71 @@
 
 中文说明请戳[这里](README.zh-CN.md)
 
-Restore dll from Unity il2cpp binary file (except code)
+Unity il2cpp reverse engineer
 
 ## Features
 
-* Complete DLL restore (except code)
-* Supports ELF, ELF64, Mach-O, PE and NSO format
-* Supports Unity 5.3 and greater
-* Supports automated IDA script generation
-  * rename method
-  * name and tag metadata
-  * makefunction to improve ida analysis
-* Supports Android dumped .so file to bypass protection
+* Complete DLL restore (except code), can be used to extract `MonoBehaviour` and `MonoScript`
+* Supports ELF, ELF64, Mach-O, PE, NSO and WASM format
+* Supports Unity 5.3 - 2022.2
+* Supports generate IDA, Ghidra and Binary Ninja scripts to help them better analyze il2cpp files
+* Supports generate structures header file
+* Supports Android memory dumped `libil2cpp.so` file to bypass protection
+* Support bypassing simple PE protection
 
 ## Usage
 
+Run `Il2CppDumper.exe` and choose the il2cpp executable file and `global-metadata.dat` file, then enter the information as prompted
+
+The program will then generate all the output files in current working directory
+
+### Command-line
+
 ```
-Il2CppDumper.exe <executable-file> <global-metadata> [unityVersion] [mode]
+Il2CppDumper.exe <executable-file> <global-metadata> <output-directory>
 ```
 
-Or run `Il2CppDumper.exe` and choose the il2cpp executable file and `global-metadata.dat` file, then enter the information as prompted.
-
-The program will then generate all the output files in current working directory.
-
-### Extraction Modes
-
-#### Manual
-
-The parameters (`CodeRegistration` and `MetadataRegistration`) that are passed to `il2cpp::vm::MetadataCache::Register()` needs to be manually reverse engineered and passed to the program.
-
-#### Auto
-
-Automatically finds the `il2cpp_codegen_register()` function by signature matching and read out the first (`CodeRegistration`) and second (`MetadataRegistration`) parameter passed to the `il2cpp::vm::MetadataCache::Register()` method that will be invoked in the registration function. May not work well due to compiler optimizations.
-
-#### Auto(Plus) - **Recommended**
-
-Matches possible pointers in the data section with some guidance from global-metadata.
-
-Supports metadata version 20 and up
-
-only `CodeRegistration` address can be found on metadata version 16
-
-#### Auto(Symbol)
-
-Uses symbols in the il2cpp binary to locate `CodeRegistration` and `MetadataRegistration`.
-
-Only supports ELF format file.
-
-### Output files
-
-#### dump.cs
-
-Simple decompilation code. It is recommended to get better code from DummyDll using [dnSpy](https://github.com/0xd4d/dnSpy) or other tools.
-
-#### script.py
-
-Requires IDA and IDAPython. Can be loaded in IDA via `File -> Script file`.
-
-#### stringliteral.json
-
-Contains all stringLiteral information
+### Outputs
 
 #### DummyDll
 
 Folder, containing all restored dll files
+
+Use [dnSpy](https://github.com/0xd4d/dnSpy), [ILSpy](https://github.com/icsharpcode/ILSpy) or other .Net decompiler tools to view
+
+Can be used to extract Unity `MonoBehaviour` and `MonoScript`, for [UtinyRipper](https://github.com/mafaca/UtinyRipper), [UABE](https://7daystodie.com/forums/showthread.php?22675-Unity-Assets-Bundle-Extractor)
+
+#### ida.py
+
+For IDA
+
+#### ida_with_struct.py
+
+For IDA, read il2cpp.h file and apply structure information in IDA
+
+#### il2cpp.h
+
+structure information header file
+
+#### ghidra.py
+
+For Ghidra
+
+#### Il2CppBinaryNinja
+
+For BinaryNinja
+
+#### ghidra_wasm.py
+
+For Ghidra, work with [ghidra-wasm-plugin](https://github.com/nneonneo/ghidra-wasm-plugin)
+
+#### script.json
+
+For ida.py, ghidra.py and Il2CppBinaryNinja
+
+#### stringliteral.json
+
+Contains all stringLiteral information
 
 ### Configuration
 
@@ -78,26 +79,43 @@ Available options:
 * `DumpMethod`, `DumpField`, `DumpProperty`, `DumpAttribute`, `DumpFieldOffset`, `DumpMethodOffset`, `DumpTypeDefIndex`
   * Whether to output these information to dump.cs
 
-* `DummyDll`
-  * Whether to generate dummy DLLs
+* `GenerateDummyDll`, `GenerateScript`
+  * Whether to generate these things
 
-* `MakeFunction`
-  * Whether to add the MakeFunction code in script.py
+* `DummyDllAddToken`
+  * Whether to add token in DummyDll
+
+* `RequireAnyKey`
+  * Whether to press any key to exit at the end
 
 * `ForceIl2CppVersion`, `ForceVersion`
   * If `ForceIl2CppVersion` is `true`, the program will use the version number specified in `ForceVersion` to choose parser for il2cpp binaries (does not affect the choice of metadata parser). This may be useful on some older il2cpp version (e.g. the program may need to use v16 parser on il2cpp v20 (Android) binaries in order to work properly)
+
+* `ForceDump`
+  * Force files to be treated as dumped
+
+* `NoRedirectedPointer`
+  * Treat pointers in dumped files as unredirected, This option needs to be `true` for files dumped from some devices
 
 ## Common errors
 
 #### `ERROR: Metadata file supplied is not valid metadata file.`  
 
-The specified `global-metadata.dat` is invalid and the program cannot recognize it. Make sure you choose the correct file. Sometimes games may obfuscate this file for content protection purposes and so on. Deobfuscating of such files is beyond the scope of this program, so please **DO NOT** file an issue regarding to deobfuscating.
+Make sure you choose the correct file. Sometimes games may obfuscate this file for content protection purposes and so on. Deobfuscating of such files is beyond the scope of this program, so please **DO NOT** file an issue regarding to deobfuscating.
 
-#### `ERROR: Can't use this mode to process file, try another mode.`
+If your file is `libil2cpp.so` and you have a rooted Android phone, you can try my other project [Zygisk-Il2CppDumper](https://github.com/Perfare/Zygisk-Il2CppDumper), it can bypass this protection.
 
-Try other extraction modes.
+#### `ERROR: Can't use auto mode to process file, try manual mode.`
 
-If all automated extraction modes failed with this error and you are sure that the files you supplied are not corrupted/obfuscated, please file an issue with the logs and sample files.
+Please note that the executable file for the PC platform is `GameAssembly.dll` or `*Assembly.dll`
+
+You can open a new issue and upload the file, I will try to solve.
+
+#### `ERROR: This file may be protected.`
+
+Il2CppDumper detected that the executable file has been protected, use `GameGuardian` to dump `libil2cpp.so` from the game memory, then use Il2CppDumper to load and follow the prompts, can bypass most protections.
+
+If you have a rooted Android phone, you can try my other project [Zygisk-Il2CppDumper](https://github.com/Perfare/Zygisk-Il2CppDumper), it can bypass almost all protections.
 
 ## Credits
 
